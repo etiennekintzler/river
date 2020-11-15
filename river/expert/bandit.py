@@ -18,6 +18,7 @@ __all__ = [
 # loss-based reward ('compute_reward')
 # tests for classification
 # tests on real datasets
+# In Exp3 see what causes nan in probability distr
 
 
 class Bandit(metaclass=abc.ABCMeta):
@@ -118,9 +119,16 @@ class EpsilonGreedyBandit(Bandit):
 
     Examples
     --------
-    TODO
 
-     References
+    >>> from river import linear_model
+    >>> from river import expert
+    >>> from river import preprocessing
+    >>> from river import metrics
+
+    
+    TODO: finish ex
+
+    References
     ----------
     [^1]: [Sutton, R. S., & Barto, A. G. (2018). Reinforcement learning: An introduction. MIT press.](http://incompleteideas.net/book/RLbook2020.pdf)
     """
@@ -148,7 +156,7 @@ class EpsilonGreedyBandit(Bandit):
 class UCBBandit(Bandit):
     """Upper Confidence Bound bandit.
     
-     References
+    References
     ----------
     [^1]: [Auer, P., Cesa-Bianchi, N., & Fischer, P. (2002). Finite-time analysis of the multiarmed bandit problem. Machine learning, 47(2-3), 235-256.](https://link.springer.com/content/pdf/10.1023/A:1013689704352.pdf)
     """
@@ -159,8 +167,8 @@ class UCBBandit(Bandit):
         self.delta = delta
 
     def _pull_arm(self):
-        #upper_bound = self._Q + np.sqrt(2*np.log(self._t)/self._N)
-        upper_bound = self._Q + np.sqrt(2*np.log(1/self.delta)/self._N)
+        upper_bound = self._Q + np.sqrt(2*np.log(self._t)/self._N)
+        #upper_bound = self._Q + np.sqrt(2*np.log(1/self.delta)/self._N)
         best_arm = np.argmax(upper_bound)
         return best_arm
 
