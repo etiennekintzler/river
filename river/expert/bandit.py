@@ -2,15 +2,16 @@ import abc
 
 import numpy as np
 
+from river import base
 from river import metrics
 
 
 __all__ = [
     'EpsilonGreedyBandit',
-    'UCBBandit',
-    'RandomBandit',
+    'Exp3Bandit',
     'OracleBandit',
-    'Exp3Bandit'
+    'RandomBandit',
+    'UCBBandit'
 ]
 
 # TODO :
@@ -20,21 +21,22 @@ __all__ = [
 # tests on real datasets
 # In Exp3 see what causes nan in probability distr
 
+# Ref not integrated : 
+# [Python code from Toulouse univ](https://www.math.univ-toulouse.fr/~jlouedec/demoBandits.html)
+# [Slivkins, A. Introduction to Multi-Armed Bandits](https://arxiv.org/pdf/1904.07272.pdf)
 
-class Bandit(metaclass=abc.ABCMeta):
-    """Abstract class for bandit.
+# Echange avec Max:
+# `predict_one` retourne le meilleur modèle au sens de reward cumulé moyen (voire de la métrique choisie).
+# Bandit class herite de base.EnsembleMixin
+# Les classes filles EpsilonGreedy et EpsilonRegressor héritent de Bandit et BaseClassifier ou BaseRegressor
 
-    References
-    ----------
-    [^1] [Python code from Toulouse univ](https://www.math.univ-toulouse.fr/~jlouedec/demoBandits.html)
-    [^2] [Slivkins, A. Introduction to Multi-Armed Bandits](https://arxiv.org/pdf/1904.07272.pdf)
-    """
+class Bandit(base.EnsembleMixin):
+    """Abstract class for bandit."""
 
-    def __init__(self, models, compute_reward, metric: metrics.Metric = None,
-                 verbose=False, save_rewards=False):
+    def __init__(self, models, compute_reward, metric: metrics.Metric = None, verbose=False, save_rewards=False):
         if len(models) <= 1:
             raise ValueError(f"You supply {len(models)} models. At least 2 models should be supplied.")
-        
+        super().__init__(models)
         self.compute_reward = compute_reward
         self.metric = metric
         self.verbose = verbose
@@ -61,7 +63,7 @@ class Bandit(metaclass=abc.ABCMeta):
 
     @property
     def best_model(self):
-        return self.models[self._best_model_idx]
+        return self[self._best_model_idx]
 
     def print_percentage_pulled(self):
         percentages = self._N / sum(self._N)
@@ -70,13 +72,13 @@ class Bandit(metaclass=abc.ABCMeta):
 
     def predict_one(self, x):
         best_arm = self._pull_arm()
-        y_pred = self.models[best_arm].predict_one(x)
+        y_pred = self[best_arm].predict_one(x)
 
         return y_pred
 
     def learn_one(self, x, y):
         best_arm = self._pull_arm()
-        best_model = self.models[best_arm]
+        best_model = self[best_arm]
         y_pred = best_model.predict_one(x)
 
         best_model.learn_one(x=x, y=y)
