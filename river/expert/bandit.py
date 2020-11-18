@@ -1,9 +1,12 @@
 import abc
+import copy
 
 import numpy as np
 
 from river import base
 from river import metrics
+from river import preprocessing
+from river import stats
 
 
 __all__ = [
@@ -19,7 +22,7 @@ __all__ = [
 # loss-based reward ('compute_reward')
 # tests for classification
 # tests on real datasets
-# In Exp3 see what causes nan in probability distr
+# In Exp3 see what causes nan in probability distr. Instability comes from np.exp(x) quand x devient grand
 
 # Ref not integrated : 
 # [Python code from Toulouse univ](https://www.math.univ-toulouse.fr/~jlouedec/demoBandits.html)
@@ -30,15 +33,19 @@ __all__ = [
 # Bandit class herite de base.EnsembleMixin
 # Les classes filles EpsilonGreedy et EpsilonRegressor héritent de Bandit et BaseClassifier ou BaseRegressor
 
+# Réflexions:
+# Séparer l'effet selection du best arm de l'effet entrainement --> donner les modèles entraînés par l'oracle à un bandit
+# Utiliser directement river.stats.mean.Mean()
+
 class Bandit(base.EnsembleMixin):
     """Abstract class for bandit."""
 
-    def __init__(self, models, compute_reward, metric: metrics.Metric = None, verbose=False, save_rewards=False):
+    def __init__(self, models, metric: metrics.Metric = None, reward_scaler=None, verbose=False, save_rewards=False):
         if len(models) <= 1:
             raise ValueError(f"You supply {len(models)} models. At least 2 models should be supplied.")
         super().__init__(models)
-        self.compute_reward = compute_reward
-        self.metric = metric
+        self.reward_scaler = copy.deepcopy(reward_scaler)
+        self.metric = copy.deepcopy(metric)
         self.verbose = verbose
         self.models = models
         self.save_rewards = save_rewards
@@ -46,8 +53,8 @@ class Bandit(base.EnsembleMixin):
             self.rewards = []
 
         self._n_arms = len(models)
-        self._Q = np.zeros(self._n_arms, dtype=np.float)
-        self._N = np.ones(self._n_arms, dtype=np.int)
+        self._N = np.zeros(self._n_arms, dtype=np.int)
+        self._average_reward = np.zeros(self._n_arms, dtype=np.float)
 
     @abc.abstractmethod
     def _pull_arm(self):
@@ -59,11 +66,21 @@ class Bandit(base.EnsembleMixin):
 
     @property
     def _best_model_idx(self):
-        return np.argmax(self._Q)
+        return np.argmax(self._average_reward)
+        #TODO: np.argmax du reward cumulé: np.argmax(self._R/self._N)
 
     @property
     def best_model(self):
         return self[self._best_model_idx]
+        
+    def compute_reward(self, y_pred, y_true):
+        metric_value = self.metric._eval(y_pred, y_true)
+        metric_to_reward_dict = {"metric": metric_value if self.metric.bigger_is_better else (-1) * metric_value}
+        reward = (self.reward_scaler
+                  .learn_one(metric_to_reward_dict)
+                  .transform_one(metric_to_reward_dict)
+                  ["metric"])
+        return reward
 
     def print_percentage_pulled(self):
         percentages = self._N / sum(self._N)
@@ -77,35 +94,37 @@ class Bandit(base.EnsembleMixin):
         return y_pred
 
     def learn_one(self, x, y):
-        best_arm = self._pull_arm()
-        best_model = self[best_arm]
-        y_pred = best_model.predict_one(x)
+        chosen_arm = self._pull_arm()
+        chosen_model = self[chosen_arm]
+        y_pred = chosen_model.predict_one(x)
 
-        best_model.learn_one(x=x, y=y)
+        # Train chosen model
+        chosen_model.learn_one(x=x, y=y)
 
-        if self.verbose:
-            print(
-                '\t'.join((
-                    f'best {self._best_model_idx}',
-                ))
-            )
-            print("y_pred:", y_pred, ", y_true:", y)
-
+        # Compute reward and update chosen arm
         reward = self.compute_reward(y_pred=y_pred, y_true=y)
-
-        if self.metric:
-            self.metric.update(y_pred=y_pred, y_true=y)
+        self._N[chosen_arm] += 1
+        self._average_reward[chosen_arm] += (1.0 / self._N[chosen_arm]) * (reward - self._average_reward[chosen_arm])
+        
+        # Update arm based on the bandit class
+        self._update_arm(chosen_arm, reward)
 
         if self.save_rewards:
             self.rewards += [reward]
 
-        self._update_arm(best_arm, reward)
+        if self.verbose:
+            print(f'best {self._best_model_idx}')
+            print("y_pred:", y_pred, ", y_true:", y)
+
+        if self.metric:
+            self.metric.update(y_pred=y_pred, y_true=y)
 
         return self
 
 
 class EpsilonGreedyBandit(Bandit):
-    """Epsilon-greedy bandit implementation
+    """Epsilon-greedy bandit (also called Follow-The-Leader algorithm).
+    For this bandit, reward are supposed to be 1-subgaussian, hence the use of the StandardScaler and MaxAbsScaler as reward_scaler
     
     Parameters
     ----------
@@ -133,55 +152,87 @@ class EpsilonGreedyBandit(Bandit):
     References
     ----------
     [^1]: [Sutton, R. S., & Barto, A. G. (2018). Reinforcement learning: An introduction. MIT press.](http://incompleteideas.net/book/RLbook2020.pdf)
+    [^2]: [Rivasplata, O. (2012). Subgaussian random variables: An expository note. Internet publication, PDF.]: (https://sites.ualberta.ca/~omarr/publications/subgaussians.pdf)
+    [^3]: [Lattimore, T., & Szepesvári, C. (2020). Bandit algorithms. Cambridge University Press.](https://tor-lattimore.com/downloads/book/book.pdf)
     """
 
     def __init__(self, epsilon=0.1, reduce_epsilon=0.99, **kwargs):
         super().__init__(**kwargs)
         self.epsilon = epsilon
         self.reduce_epsilon = reduce_epsilon
+        if not self.reward_scaler:
+            self.reward_scaler = preprocessing.StandardScaler()
 
     def _pull_arm(self):
         if np.random.rand() > self.epsilon:
-            best_arm = np.argmax(self._Q)
+            chosen_arm = np.argmax(self._average_reward)
         else:
-            best_arm = np.random.choice(self._n_arms)
+            chosen_arm = np.random.choice(self._n_arms)
 
-        return best_arm
+        return chosen_arm
 
     def _update_arm(self, arm, reward):
+        # The arm is already updated in the learn_one phase.
         if self.reduce_epsilon:
             self.epsilon *= self.reduce_epsilon
-        self._N[arm] += 1
-        self._Q[arm] += (1.0 / self._N[arm]) * (reward - self._Q[arm])
 
 
 class UCBBandit(Bandit):
     """Upper Confidence Bound bandit.
     
+    For this bandit, rewards are supposed to be 1-subgaussian (see Lattimore and Szepesvári) hence the use of the StandardScaler and MaxAbsScaler as reward_scaler
+
     References
     ----------
     [^1]: [Auer, P., Cesa-Bianchi, N., & Fischer, P. (2002). Finite-time analysis of the multiarmed bandit problem. Machine learning, 47(2-3), 235-256.](https://link.springer.com/content/pdf/10.1023/A:1013689704352.pdf)
+    [^2]: [Rivasplata, O. (2012). Subgaussian random variables: An expository note. Internet publication, PDF.]: (https://sites.ualberta.ca/~omarr/publications/subgaussians.pdf)
+    [^3]: [Lattimore, T., & Szepesvári, C. (2020). Bandit algorithms. Cambridge University Press.](https://tor-lattimore.com/downloads/book/book.pdf)
     """
 
-    def __init__(self, delta, **kwargs):
+    def __init__(self, delta=None, **kwargs):
         super().__init__(**kwargs)
-        self._t = 1
+        self._n_iter = 0 # TODO: rename _n_iter
         self.delta = delta
+        if not self.reward_scaler:
+            self.reward_scaler = preprocessing.StandardScaler()
+
+    def fun_delta(self):
+        #return 1 / self.delta
+        return 1 + self._n_iter*(np.log(self._n_iter)**2)
 
     def _pull_arm(self):
-        upper_bound = self._Q + np.sqrt(2*np.log(self._t)/self._N)
-        #upper_bound = self._Q + np.sqrt(2*np.log(1/self.delta)/self._N)
-        best_arm = np.argmax(upper_bound)
-        return best_arm
+        if any(self._N == 0): # Explore all arms first
+            never_pulled_arm = np.where(self._N == 0)[0] #[0] because returned a tuple (array(),)
+            chosen_arm = np.random.choice(never_pulled_arm)
+        else:
+            if self.delta:
+                #exploration = np.sqrt(2*np.log(1/self.delta)/self._N)
+                exploration_bonus = np.sqrt(2 * np.log(self.fun_delta()) / self._N)
+            else:
+                exploration_bonus = np.sqrt(2 * np.log(self._n_iter) / self._N)
+
+            upper_bound = self._average_reward #+ exploration
+            chosen_arm = np.argmax(upper_bound)
+
+        return chosen_arm
 
     def _update_arm(self, arm, reward):
-        self._N[arm] += 1
-        self._Q[arm] += (1.0 / self._N[arm]) * (reward - self._Q[arm])
-        self._t += 1
+        # The arm is already partially updated in the learn_one phase
+        self._n_iter += 1
 
 
 class Exp3Bandit(Bandit):
-    """Exp3 implementation from Lattimore and Szepesvári. The algorithm makes the hypothesis that the reward is in [0, 1]
+    """Exp3 implementation from Lattimore and Szepesvári. 
+    The algorithm makes the hypothesis that the reward is in [0, 1]. Thus the scaler MinMaxScaler should be used.
+   
+    Parameters
+    ----------
+    models
+        The models to compare.
+    metric
+        Metric used for comparing models with.
+    gamma
+        Parameter for exploration.
 
     References
     ----------
@@ -195,13 +246,15 @@ class Exp3Bandit(Bandit):
         self.gamma = gamma
 
     def _make_distr(self):
-        numerator =  np.exp(self.gamma * self._s)
+        s_hat = self._s  - np.min(self._s)
+        numerator = np.exp(self.gamma * s_hat)
+        #numerator =  np.exp(self.gamma * self._s)
         return numerator / np.sum(numerator)
 
     def _pull_arm(self):
         self._p = self._make_distr()
-        best_arm = np.random.choice(a=range(self._n_arms), size=1, p=self._p)[0]
-        return best_arm
+        chosen_arm = np.random.choice(a=range(self._n_arms), size=1, p=self._p)[0]
+        return chosen_arm
 
     def _update_arm(self, arm, reward):
         self._s += 1.0
@@ -251,8 +304,8 @@ class OracleBandit(Bandit):
     def _pull_arm(self, x, y):
         preds = [model.predict_one(x) for model in self.models]
         losses = [np.abs(y_pred - y) for y_pred in preds]
-        best_arm = np.argmin(losses)
-        return best_arm
+        chosen_arm = np.argmin(losses)
+        return chosen_arm
 
     def _update_arm(self, arm, reward):
         pass
