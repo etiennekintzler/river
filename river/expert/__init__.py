@@ -17,19 +17,11 @@ another.
 """
 
 from .bandit import (
-     Bandit,
-     EpsilonGreedyClassifier,
      EpsilonGreedyRegressor,
-     EpsilonGreedyBandit,
-     Exp3Bandit,
      OracleBandit,
-     UCBBandit,
-     UCBClassifier,
-     UCBRegressor,
-     RandomBandit,
-     RandomBanditClassifier,
      RandomBanditRegressor,
-     )
+     UCBRegressor,
+)
 
 from .ewa import EWARegressor
 from .sh import SuccessiveHalvingClassifier

@@ -1,3 +1,4 @@
+import abc
 import copy
 import typing
 
@@ -17,6 +18,10 @@ __all__ = [
     'UCBRegressor',
 ]
 
+# TODO:
+# Docstring
+# Determine which object to store (rewards/percentages pulled/loss?)
+
 class Bandit(base.EnsembleMixin):
     def __init__(self, models, metric: metrics.Metric, reward_scaler: base.Transformer, 
                  verbose=False, save_rewards=False, save_percentage_pulled=False):
@@ -34,9 +39,11 @@ class Bandit(base.EnsembleMixin):
         self.metric = copy.deepcopy(metric)
         self.verbose = verbose
         self.models = models
+
         self.save_rewards = save_rewards
         if save_rewards:
             self.rewards: typing.List = []
+
         self.save_percentage_pulled = save_percentage_pulled
         if save_percentage_pulled:
             self.store_percentage_pulled: typing.List = []
@@ -73,6 +80,7 @@ class Bandit(base.EnsembleMixin):
     def add_models(self, new_models):
         if not isinstance(new_models, list):
             raise TypeError("Argument `new_models` must be of a list")
+
         length_new_models = len(new_models)
         self.models += new_models
         self._n_arms += length_new_models
@@ -81,7 +89,9 @@ class Bandit(base.EnsembleMixin):
 
     def _compute_scaled_reward(self, y_pred, y_true):
         metric_value = self.metric._eval(y_pred, y_true)
-        metric_to_reward_dict = {"metric": metric_value if self.metric.bigger_is_better else (-1) * metric_value}
+        metric_to_reward_dict = {
+            "metric": metric_value if self.metric.bigger_is_better else (-1) * metric_value
+        }
         self.reward_scaler.learn_one(metric_to_reward_dict)
         reward = self.reward_scaler.transform_one(metric_to_reward_dict)["metric"]
         return reward
@@ -135,7 +145,7 @@ class EpsilonGreedyBandit(Bandit):
         return chosen_arm
 
     def _update_arm(self, arm, reward):
-        # The arm is already updated in the learn_one phase of class Bandit
+        # The arm is already updated in the `learn_one` phase of class `Bandit`.
         pass
 
 
@@ -143,11 +153,11 @@ class EpsilonGreedyRegressor(EpsilonGreedyBandit, base.Regressor):
     """Epsilon-greedy bandit algorithm for regression.
     
     This bandit selects the best arm (defined as the one with the highest average reward) with 
-    probability (1 - epsilon) and draws a random arm with probability epsilon. It is also called 
-    Follow-The-Leader FTL algorithm.
+    probability $(1 - \epsilon)$ and draws a random arm with probability $\epsilon$. It is also called 
+    Follow-The-Leader (FTL) algorithm.
 
     For this bandit, reward are supposed to be 1-subgaussian, hence the use of the StandardScaler 
-    and MaxAbsScaler as reward_scaler
+    and MaxAbsScaler as `reward_scaler`.
     
     Parameters
     ----------
@@ -157,8 +167,6 @@ class EpsilonGreedyRegressor(EpsilonGreedyBandit, base.Regressor):
         Metric used for comparing models with.
     epsilon
         Exploration parameter (default : 0.1).
-    reduce_epsilon
-        Factor applied to reduce epsilon at each time-step (default : 0.99).
 
 
     Examples
@@ -180,48 +188,6 @@ class EpsilonGreedyRegressor(EpsilonGreedyBandit, base.Regressor):
     """
     def _pred_func(self, model):
         return model.predict_one
-
-class EpsilonGreedyClassifier(EpsilonGreedyBandit, base.Classifier):
-    """Epsilon-greedy bandit algorithm for classification.
-    
-    This bandit selects the best arm (defined as the one with the highest average reward) with 
-    probability (1 - epsilon) and draws a random arm with probability epsilon. It is also called 
-    Follow-The-Leader FTL algorithm.
-    
-    For this bandit, reward are supposed to be 1-subgaussian, hence the use of the StandardScaler 
-    and MaxAbsScaler as reward_scaler
-    
-    Parameters
-    ----------
-    models
-        The models to compare.
-    metric
-        Metric used for comparing models with.
-    epsilon
-        Exploration parameter (default : 0.1).
-    reduce_epsilon
-        Factor applied to reduce epsilon at each time-step (default : 0.99).
-
-
-    Examples
-    --------
-
-    >>> from river import linear_model
-    >>> from river import expert
-    >>> from river import preprocessing
-    >>> from river import metrics
-
-    
-    TODO: finish ex
-
-    References
-    ----------
-    [^1]: [Sutton, R. S., & Barto, A. G. (2018). Reinforcement learning: An introduction. MIT press.](http://incompleteideas.net/book/RLbook2020.pdf)
-    [^2]: [Rivasplata, O. (2012). Subgaussian random variables: An expository note. Internet publication, PDF.]: (https://sites.ualberta.ca/~omarr/publications/subgaussians.pdf)
-    [^3]: [Lattimore, T., & Szepesvári, C. (2020). Bandit algorithms. Cambridge University Press.](https://tor-lattimore.com/downloads/book/book.pdf)
-    """
-    def _pred_func(self, model):
-        return model.predict_proba_one
 
 
 class UCBBandit(Bandit):
@@ -252,7 +218,7 @@ class UCBBandit(Bandit):
         return chosen_arm
 
     def _update_arm(self, arm, reward):
-        # The arm is partially updated (average reward) in the learn_one phase of class `Bandit`.
+        # The arm is partially updated (the `average reward` part) in the `learn_one` phase of class `Bandit`.
         self._n_iter += 1
 
 
@@ -261,7 +227,7 @@ class UCBRegressor(UCBBandit, base.Regressor):
 
     The class offers 2 implementations of UCB:
     - UCB1 from [^1], when the parameter delta has value None
-    - UCB(delta) from [²], when the parameter delta is in (0, 1)
+    - UCB(delta) from [^2], when the parameter delta is in (0, 1)
     
     For this bandit, rewards are supposed to be 1-subgaussian (see Lattimore and Szepesvári, chapter 6, p. 91) 
     hence the use of the `StandardScaler` and `MaxAbsScaler` as `reward_scaler`.
@@ -351,4 +317,3 @@ class OracleBandit(Bandit):
             self.rewards += [rewards_timestep]
 
         return self
-
