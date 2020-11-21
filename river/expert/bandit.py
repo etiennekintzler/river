@@ -1,4 +1,5 @@
 import abc
+import collections
 import copy
 import typing
 
@@ -24,7 +25,7 @@ __all__ = [
 
 class Bandit(base.EnsembleMixin):
     def __init__(self, models, metric: metrics.Metric, reward_scaler: base.Transformer, 
-                 verbose=False, save_rewards=False, save_percentage_pulled=False):
+                 print_every=None, save_metric_values=False, save_percentage_pulled=False):
         
         if len(models) <= 1:
             raise ValueError(f"You supply {len(models)} models. At least 2 models should be supplied.")
@@ -35,20 +36,22 @@ class Bandit(base.EnsembleMixin):
                 raise ValueError(f"{metric.__class__.__name__} metric can't be used to evaluate a " +
                                  f'{model.__class__.__name__}')
         super().__init__(models)
+        #self.models = models
         self.reward_scaler = copy.deepcopy(reward_scaler)
         self.metric = copy.deepcopy(metric)
-        self.verbose = verbose
-        self.models = models
-
-        self.save_rewards = save_rewards
-        if save_rewards:
-            self.rewards: typing.List = []
+        self.print_every = print_every
+        
+        self.save_metric_values = save_metric_values
+        if save_metric_values:
+            self.metric_values: typing.List = []
 
         self.save_percentage_pulled = save_percentage_pulled
         if save_percentage_pulled:
             self.store_percentage_pulled: typing.List = []
 
+        # Initializing bandits internals
         self._n_arms = len(models)
+        self._n_iter = 0 # number of times learn_one is called
         self._N = np.zeros(self._n_arms, dtype=np.int)
         self._average_reward = np.zeros(self._n_arms, dtype=np.float)
 
@@ -66,7 +69,8 @@ class Bandit(base.EnsembleMixin):
 
     @property
     def _best_model_idx(self):
-        return np.argmax(self._average_reward) # average reward instead of cumulated (otherwise favors arms which are pulled often)
+        # average reward instead of cumulated (otherwise favors arms which are pulled often)
+        return np.argmax(self._average_reward) 
 
     @property
     def best_model(self):
@@ -76,25 +80,6 @@ class Bandit(base.EnsembleMixin):
     def percentage_pulled(self):
         percentages = self._N / sum(self._N)
         return percentages
-        
-    def add_models(self, new_models):
-        if not isinstance(new_models, list):
-            raise TypeError("Argument `new_models` must be of a list")
-
-        length_new_models = len(new_models)
-        self.models += new_models
-        self._n_arms += length_new_models
-        self._N = np.concatenate([self._N, np.zeros(length_new_models, dtype=np.int)])
-        self._average_reward = np.concatenate([self._average_reward, np.zeros(length_new_models, dtype=np.float)])
-
-    def _compute_scaled_reward(self, y_pred, y_true):
-        metric_value = self.metric._eval(y_pred, y_true)
-        metric_to_reward_dict = {
-            "metric": metric_value if self.metric.bigger_is_better else (-1) * metric_value
-        }
-        self.reward_scaler.learn_one(metric_to_reward_dict)
-        reward = self.reward_scaler.transform_one(metric_to_reward_dict)["metric"]
-        return reward
 
     def predict_one(self, x):
         best_arm = self._pull_arm()
@@ -104,30 +89,61 @@ class Bandit(base.EnsembleMixin):
     def learn_one(self, x, y):
         chosen_arm = self._pull_arm()
         chosen_model = self[chosen_arm]
+        
         y_pred = chosen_model.predict_one(x)
-
-        chosen_model.learn_one(x=x, y=y)
-
+        self.metric.update(y_pred=y_pred, y_true=y)
+        if update_model:
+            chosen_model.learn_one(x=x, y=y)
+        
+        # Update bandit internals (common to all bandit)
         reward = self._compute_scaled_reward(y_pred=y_pred, y_true=y)
+        self._n_iter += 1
         self._N[chosen_arm] += 1
         self._average_reward[chosen_arm] += (1.0 / self._N[chosen_arm]) * (reward - self._average_reward[chosen_arm])
-        
+            
+        # Specific update of the arm for certain bandit class
         self._update_arm(chosen_arm, reward)
-        self.metric.update(y_pred=y_pred, y_true=y)
 
-        if self.verbose:
-            print(
-                f"Bandit {str(self)}",
-                f"Metric {self.metric.get()}",
-                f"Current best model {self._best_model_idx}",
-                sep="\n"
-            )
+        if self.print_every:
+            if (self._n_iter % self.print_every) == 0:
+                self._print_info()
         
         if self.save_percentage_pulled:
             self.store_percentage_pulled += [self.percentage_pulled]
 
+        if self.save_metric_values:
+            self.metric_values += [self.metric._eval(y_pred, y)]
+
         return self
 
+    def add_models(self, new_models):
+        if not isinstance(new_models, list):
+            raise TypeError("Argument `new_models` must be of a list")
+
+        length_new_models = len(new_models)
+        # Careful, not validation of the model is done here (contrary to __init__)
+        self.models += new_models
+        self._n_arms += length_new_models
+        self._N = np.concatenate([self._N, np.zeros(length_new_models, dtype=np.int)])
+        self._average_reward = np.concatenate([self._average_reward, np.zeros(length_new_models, dtype=np.float)])
+
+    def _compute_scaled_reward(self, y_pred, y_true, update_scaler=True):
+        metric_value = self.metric._eval(y_pred, y_true)
+        metric_to_reward_dict = {
+            "metric": metric_value if self.metric.bigger_is_better else (-1) * metric_value
+        }
+        if update_scaler:
+            self.reward_scaler.learn_one(metric_to_reward_dict)
+        reward = self.reward_scaler.transform_one(metric_to_reward_dict)["metric"]
+        return reward
+        
+    def _print_info(self):
+            print(
+                str(self),
+                str(self.metric),
+                "Best model id: " + str(self._best_model_idx), 
+                sep="\n\t"
+            )
 
 class EpsilonGreedyBandit(Bandit):
     def __init__(self, epsilon=0.1, **kwargs):
@@ -145,7 +161,7 @@ class EpsilonGreedyBandit(Bandit):
         return chosen_arm
 
     def _update_arm(self, arm, reward):
-        # The arm is already updated in the `learn_one` phase of class `Bandit`.
+        # The arm internals are already updated in the `learn_one` phase of class `Bandit`.
         pass
 
 
@@ -205,7 +221,7 @@ class UCBBandit(Bandit):
     def _pull_arm(self):
         not_pulled_enough = self._N <= self.explore_each_arm
         if any(not_pulled_enough): # Explore all arms pulled less than `explore_each_arm` times
-            never_pulled_arm = np.where(not_pulled_enough)[0] #[0] because returned a tuple (array(),)
+            never_pulled_arm = np.where(not_pulled_enough)[0] #[0] because returned a tuple (array(),) even when input is 1D array
             chosen_arm = np.random.choice(never_pulled_arm)
         else:
             if self.delta:
@@ -218,8 +234,8 @@ class UCBBandit(Bandit):
         return chosen_arm
 
     def _update_arm(self, arm, reward):
-        # The arm is partially updated (the `average reward` part) in the `learn_one` phase of class `Bandit`.
-        self._n_iter += 1
+        # The arm internals are already updated in the `learn_one` phase of class `Bandit`.
+        pass
 
 
 class UCBRegressor(UCBBandit, base.Regressor):
@@ -288,7 +304,7 @@ class OracleBandit(Bandit):
 
     def _pull_arm(self, x, y):
         preds = [model.predict_one(x) for model in self]
-        losses = [np.abs(y_pred - y) for y_pred in preds]
+        losses = [self._compute_scaled_reward(y_pred, y) for y_pred in preds]
         chosen_arm = np.argmin(losses)
         return chosen_arm
 
@@ -296,7 +312,7 @@ class OracleBandit(Bandit):
         pass
 
     def learn_one(self, x, y):
-        rewards_timestep = []
+        metrics_timestep = []
         predictions_timestep = []
 
         for model in self:
@@ -307,13 +323,13 @@ class OracleBandit(Bandit):
             if self.save_predictions:
                 predictions_timestep += [y_pred]
 
-            if self.save_rewards:
-                rewards_timestep += [self._compute_scaled_reward(y_pred=y_pred, y_true=y)]
+            if self.save_metric_values:
+                metrics_timestep += [self.metric._eval(y_pred=y_pred, y_true=y)]
 
         if self.save_predictions:
             self.predictions += [predictions_timestep]
         
-        if self.save_rewards:
-            self.rewards += [rewards_timestep]
+        if self.save_metric_values:
+            self.metric_values += [metrics_timestep]
 
         return self
