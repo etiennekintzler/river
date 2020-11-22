@@ -18,6 +18,7 @@ another.
 
 from .bandit import (
      EpsilonGreedyRegressor,
+     Exp3Regressor,
      OracleBandit,
      RandomBanditRegressor,
      UCBRegressor,
@@ -31,6 +32,7 @@ from .stacking import StackingClassifier
 
 __all__ = [
     "EpsilonGreedyRegressor",
+    'Exp3Regressor',
     'EWARegressor',  
     'OracleBandit',
     'RandomBandit',

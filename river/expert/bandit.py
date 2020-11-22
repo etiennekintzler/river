@@ -211,7 +211,6 @@ class EpsilonGreedyRegressor(EpsilonGreedyBandit, base.Regressor):
 class UCBBandit(Bandit):
     def __init__(self, delta=None, explore_each_arm=1, **kwargs):
         super().__init__(**kwargs)
-        self._n_iter = 0
         if delta is not None and (delta >= 1 or delta <= 0):
             raise ValueError("The parameter delta should be comprised in ]0, 1[ (or set to None)")
         self.delta = delta
@@ -250,11 +249,73 @@ class UCBRegressor(UCBBandit, base.Regressor):
     For this bandit, rewards are supposed to be 1-subgaussian (see Lattimore and Szepesvári,
     chapter 6, p. 91) hence the use of the `StandardScaler` and `MaxAbsScaler` as `reward_scaler`.
 
+    Parameters
+    ----------
+    models
+        The models to compare.
+    metric
+        Metric used for comparing models with.
+    delta
+        For UCB(delta) implementation. Lower value means more exploration.
+
+
     References
     ----------
     [^1]: [Auer, P., Cesa-Bianchi, N., & Fischer, P. (2002). Finite-time analysis of the multiarmed bandit problem. Machine learning, 47(2-3), 235-256.](https://link.springer.com/content/pdf/10.1023/A:1013689704352.pdf)
     [^2]: [Lattimore, T., & Szepesvári, C. (2020). Bandit algorithms. Cambridge University Press.](https://tor-lattimore.com/downloads/book/book.pdf)
     [^3]: [Rivasplata, O. (2012). Subgaussian random variables: An expository note. Internet publication, PDF.]: (https://sites.ualberta.ca/~omarr/publications/subgaussians.pdf)
+    """
+
+    def _pred_func(self, model):
+        return model.predict_one
+
+
+class Exp3Bandit(Bandit):
+    def __init__(self, eta=0.5, **kwargs):
+        super().__init__(**kwargs)
+        self._p = np.ones(self._n_arms, dtype=np.float)
+        self._sum_expected_reward = np.zeros(self._n_arms, dtype=np.float)
+        self.eta = eta
+        if not self.reward_scaler:
+            self.reward_scaler = preprocessing.MinMaxScaler()
+
+    def _make_distr(self):
+        # substracting the median to counter numerical instability.
+        s_hat = self._sum_expected_reward  - np.median(self._sum_expected_reward)
+        numerator = np.exp(self.eta * s_hat)
+        return numerator / np.sum(numerator)
+
+    def _pull_arm(self):
+        self._p = self._make_distr()
+        chosen_arm = np.random.choice(a=range(self._n_arms), p=self._p)
+        return chosen_arm
+
+    def _update_arm(self, arm, reward):
+        x_hat = np.array(
+            [1 - ((1 - reward) / self._p[a]) if a == arm else 1 for a in range(self._n_arms)]
+        )
+        self._sum_expected_reward += x_hat
+
+
+class Exp3Regressor(Exp3Bandit, base.Regressor):
+    """Exp3 implementation from Lattimore and Szepesvári.
+
+    The algorithm makes the hypothesis that the reward is in [0, 1]. Thus the scaler MinMaxScaler 
+    should be used.
+
+    Parameters
+    ----------
+    models
+        The models to compare.
+    metric
+        Metric used for comparing models with.
+    eta
+        Parameter for exploration. The closer to zero, the more exploration.
+
+    References
+    ----------
+    [^1]: [Lattimore, T., & Szepesvári, C. (2020). Bandit algorithms. Cambridge University Press.](https://tor-lattimore.com/downloads/book/book.pdf)
+    [^2]: [Auer, P., Cesa-Bianchi, N., Freund, Y., & Schapire, R. E. (2002). The nonstochastic multiarmed bandit problem. SIAM journal on computing, 32(1), 48-77.](http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.21.8735&rep=rep1&type=pdf)
     """
 
     def _pred_func(self, model):
